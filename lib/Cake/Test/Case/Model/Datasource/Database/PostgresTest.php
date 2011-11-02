@@ -204,7 +204,7 @@ class PostgresTest extends CakeTestCase {
  */
 	public $fixtures = array('core.user', 'core.binary_test', 'core.comment', 'core.article',
 		'core.tag', 'core.articles_tag', 'core.attachment', 'core.person', 'core.post', 'core.author',
-		'core.datatype',
+		'core.datatype', 'core.postgres_geo',
 	);
 /**
  * Actual DB connection used in testing
@@ -869,5 +869,170 @@ class PostgresTest extends CakeTestCase {
 		
 		$result = $this->Dbo->getEncoding();
 		$this->assertEquals('EUC-JP', $result) ;
+	}
+	
+/**
+ * test point data type.
+ *
+ * @return void
+ */
+	public function testPoint() {
+		$this->loadFixtures('PostgresGeo');
+		
+		$model = new Model(array('name' => 'PostgresGeo', 'table' => 'postgres_geos', 'ds' => 'test'));
+		$data = array(
+			'loc'				=> array(10.1,10.1),
+			'rect'				=> array(array(10.1,10.2), array(100.1,100.2)),
+		);
+		
+		$model->create();
+		$model->set($data);
+		$result = $model->save();
+		$this->assertFalse(empty($result)) ;
+		
+			// @ operator
+			// compare to circle
+		$conditions = array(
+			'loc @' => array('circle' => array('point'=> array(10.1,10.1), 100)),
+		);
+		$result = $model->find('all', array('conditions'=>$conditions));
+		$expected = array(
+			array(
+				'PostgresGeo' => array(
+					'id' => 1,
+					'loc' => array(10.1,10.1),
+					'rect' => array(
+						array(100.1,100.2),
+						array(10.1,10.2),
+					)
+				)
+			)
+		);
+		$this->assertEquals($expected, $result) ;
+		
+		$conditions = array(
+			'loc @' => array('circle' => array('point'=> array(10.1,110.2), 100)),
+		);
+		$result = $model->find('all', array('conditions'=>$conditions));
+		$expected = array();
+		$this->assertEquals($expected, $result) ;
+
+			// compare to rectangle
+		$conditions = array(
+			'loc @' => array('box' => array(array(10.1,10.1), array(100.1,100.1))),
+		);
+		$result = $model->find('all', array('conditions'=>$conditions));
+		$expected = array(
+			array(
+				'PostgresGeo' => array(
+					'id' => 1,
+					'loc' => array(10.1,10.1),
+					'rect' => array(
+						array(100.1,100.2),
+						array(10.1,10.2),
+					)
+				)
+			)
+		);
+		$this->assertEquals($expected, $result) ;
+		
+		$conditions = array(
+			'loc @' => array('box' => array(array(11.1,10.1), array(100.1,100.1))),
+		);
+		$result = $model->find('all', array('conditions'=>$conditions));
+		$expected = array();
+		$this->assertEquals($expected, $result) ;
+
+			// ~= operator
+			// compare to circle
+		$conditions = array(
+			'loc ~=' => array('point'=> array(10.1,10.1)),
+		);
+		$result = $model->find('all', array('conditions'=>$conditions));
+		$expected = array(
+			array(
+				'PostgresGeo' => array(
+					'id' => 1,
+					'loc' => array(10.1,10.1),
+					'rect' => array(
+						array(100.1,100.2),
+						array(10.1,10.2),
+					)
+				)
+			)
+		);
+		$this->assertEquals($expected, $result) ;
+		
+		$conditions = array(
+			'loc ~=' => array('point'=> array(10.1,10.2)),
+		);
+		$result = $model->find('all', array('conditions'=>$conditions));
+		$expected = array();
+		$this->assertEquals($expected, $result) ;
+
+		$data = array(
+			'loc'				=> array(20.1,20.1),
+			'rect'				=> array(array(10.1,10.2), array(100.1,100.2)),
+		);
+		
+		$model->create();
+		$model->set($data);
+		$result = $model->save();
+		$this->assertFalse(empty($result)) ;
+
+			// order by distance
+		$order = array(
+			'loc <-> point('.$model->getDataSource()->value(1,'float').','.$model->getDataSource()->value(1,'float').')'
+		);
+		$result = $model->find('all', array('order'=>$order, 'fields'=>array('loc')));
+		$expected = array(
+			array(
+				'PostgresGeo' => array(
+					'loc' => array(10.1,10.1),
+				)
+			),
+			array(
+				'PostgresGeo' => array(
+					'loc' => array(20.1,20.1),
+				)
+			),
+		);
+		$this->assertEquals($expected, $result) ;
+
+		$order = array(
+			'loc <-> point('.$model->getDataSource()->value(1,'float').','.$model->getDataSource()->value(1,'float').') DESC'
+		);
+		$result = $model->find('all', array('order'=>$order, 'fields'=>array('loc')));
+		$expected = array(
+			array(
+				'PostgresGeo' => array(
+					'loc' => array(20.1,20.1),
+				)
+			),
+			array(
+				'PostgresGeo' => array(
+					'loc' => array(10.1,10.1),
+				)
+			),
+		);
+		$this->assertEquals($expected, $result) ;
+		
+		$order = array(
+			'loc <-> point('.$model->getDataSource()->value(15.2,'float').','.$model->getDataSource()->value(15.2,'float').')'
+		);
+		$result = $model->find('all', array('order'=>$order, 'fields'=>array('loc')));
+		$expected = array(
+			array(
+				'PostgresGeo' => array(
+					'loc' => array(20.1,20.1),
+				)
+			),
+			array(
+				'PostgresGeo' => array(
+					'loc' => array(10.1,10.1),
+				)
+			),
+		);
+		$this->assertEquals($expected, $result) ;
 	}
 }

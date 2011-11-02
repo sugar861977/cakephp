@@ -2349,29 +2349,7 @@ class DboSource extends DataSource {
 						}
 					}
 				} elseif (is_array($value) && !empty($value) && !$valueInsert) {
-					$keys = array_keys($value);
-					if ($keys === array_values($keys)) {
-						$count = count($value);
-						if ($count === 1) {
-							$data = $this->_quoteFields($key) . ' = (';
-						} else {
-							$data = $this->_quoteFields($key) . ' IN (';
-						}
-						if ($quoteValues) {
-							if (is_object($model)) {
-								$columnType = $model->getColumnType($key);
-							}
-							$data .= implode(', ', $this->value($value, $columnType));
-						}
-						$data .= ')';
-					} else {
-						$ret = $this->conditionKeysToString($value, $quoteValues, $model);
-						if (count($ret) > 1) {
-							$data = '(' . implode(') AND (', $ret) . ')';
-						} elseif (isset($ret[0])) {
-							$data = $ret[0];
-						}
-					}
+					$data = $this->_arrayConditionKeysToString($key, $value, $columnType, $quoteValues, $model);
 				} elseif (is_numeric($key) && !empty($value)) {
 					$data = $this->_quoteFields($value);
 				} else {
@@ -2385,6 +2363,37 @@ class DboSource extends DataSource {
 			}
 		}
 		return $out;
+	}
+	
+	protected function _arrayConditionKeysToString($key, $value, $columnType, $quoteValues, $model)
+	{
+		$data = null;
+		
+		$keys = array_keys($value);
+		if ($keys === array_values($keys)) {
+			$count = count($value);
+			if ($count === 1) {
+				$data = $this->_quoteFields($key) . ' = (';
+			} else {
+				$data = $this->_quoteFields($key) . ' IN (';
+			}
+			if ($quoteValues) {
+				if (is_object($model)) {
+					$columnType = $model->getColumnType($key);
+				}
+				$data .= implode(', ', $this->value($value, $columnType));
+			}
+			$data .= ')';
+		} else {
+			$ret = $this->conditionKeysToString($value, $quoteValues, $model);
+			if (count($ret) > 1) {
+				$data = '(' . implode(') AND (', $ret) . ')';
+			} elseif (isset($ret[0])) {
+				$data = $ret[0];
+			}
+		}
+		
+		return $data;
 	}
 
 /**

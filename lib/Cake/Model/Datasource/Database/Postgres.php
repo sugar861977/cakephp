@@ -80,7 +80,9 @@ class Postgres extends DboSource {
 		'binary' => array('name' => 'bytea'),
 		'boolean' => array('name' => 'boolean'),
 		'number' => array('name' => 'numeric'),
-		'inet' => array('name'  => 'inet')
+		'inet' => array('name'  => 'inet'),
+		'point' => array('name'  => 'point'),
+		'box' => array('name'  => 'box'),
 	);
 
 /**
@@ -104,6 +106,13 @@ class Postgres extends DboSource {
  * @var array
  */
 	protected $_sequenceMap = array();
+
+/**
+ * The set of valid SQL operations usable in a WHERE statement
+ *
+ * @var array
+ */
+	protected $_sqlOps = array('like', 'ilike', 'or', 'not', 'in', 'between', 'regexp', 'similar to', '@', '~=');
 
 /**
  * Connects to the database using options in the given configuration array.
@@ -633,7 +642,7 @@ class Postgres extends DboSource {
 		);
 
 		switch (true) {
-			case (in_array($col, array('date', 'time', 'inet', 'boolean'))):
+			case (in_array($col, array('date', 'time', 'inet', 'boolean', 'point', 'box'))):
 				return $col;
 			case (strpos($col, 'timestamp') !== false):
 				return 'datetime';
@@ -720,6 +729,25 @@ class Postgres extends DboSource {
 					case 'binary':
 					case 'bytea':
 						$resultRow[$table][$column] = stream_get_contents($row[$index]);
+					break;
+					case 'point':
+						$r = preg_match('/\((\d+(?:\.\d+)?),(\d+(?:\.\d+)?)\)/', $row[$index], $result);
+						if ( $r === 1 ) {
+							$resultRow[$table][$column] = array($result[1], $result[2]);
+						} else {
+							$resultRow[$table][$column] = $row[$index];
+						}
+					break;
+					case 'box':
+						$r = preg_match('/\((\d+(?:\.\d+)?),(\d+(?:\.\d+)?)\),\((\d+(?:\.\d+)?),(\d+(?:\.\d+)?)\)/', $row[$index], $result);
+						if ( $r === 1 ) {
+							$resultRow[$table][$column] = array(
+								array($result[1], $result[2]),
+								array($result[3], $result[4]),
+							);
+						} else {
+							$resultRow[$table][$column] = $row[$index];
+						}
 					break;
 					default:
 						$resultRow[$table][$column] = $row[$index];
@@ -886,5 +914,172 @@ class Postgres extends DboSource {
 				return parent::renderStatement($type, $data);
 			break;
 		}
+	}
+	
+/**
+ * Returns a quoted and escaped string of $data for use in an SQL statement.
+ *
+ * @param string $data String to be prepared for use in an SQL statement
+ * @param string $column The column into which this data will be inserted
+ * @return string Quoted and escaped data
+ */
+	public function value($data, $column = null) {
+		if ( !is_null($column) && $column !== 'point' && $column !== 'box' ) {
+			return parent::value($data, $column);
+		}
+		
+		if ($data === '') {
+			return 'NULL';
+		}
+		if ( is_array($data) ) {
+			if ( count($data) === 1 && array_key_exists('circle', $data) === true ) {
+				return $this->_circle($data);
+			} else if ( count($data) === 1 && array_key_exists('box', $data) === true ) {
+				return $this->_box($data);
+			} else if ( count($data) === 1 && array_key_exists('point', $data) === true ) {
+				return $this->_point($data['point']);
+			} else if (count($data) === 2 && $column === 'point') {
+				return $this->_point($data);
+			} else if (count($data) === 2 && $column === 'box') {
+				return $this->_box($data);
+			}
+		}
+		
+		return parent::value($data, $column);
+	}
+	
+	private function _point($velue) {
+		return 'point('.$this->value($velue[0], 'float').','.$this->value($velue[1], 'float').')';
+	}
+	
+	private function _circle($value) {
+		$result = 'circle(point(';
+		$result .= $this->value(Set::extract($value, 'circle.point.0'), 'float').',';
+		$result .= $this->value(Set::extract($value, 'circle.point.1'), 'float').'),';
+		$result .= $this->value(Set::extract($value, 'circle.0'), 'float').')';
+		
+		return $result ;
+	}
+	
+	private function _box($value) {
+		if ( array_key_exists('box', $value) ) {
+			$result = 'box(point(';
+			$result .= $this->value(Set::extract($value, 'box.0.0'), 'float').',';
+			$result .= $this->value(Set::extract($value, 'box.0.1'), 'float').'),point(';
+			$result .= $this->value(Set::extract($value, 'box.1.0'), 'float').',';
+			$result .= $this->value(Set::extract($value, 'box.1.1'), 'float').'))';
+		} else {
+			$result = 'box(point(';
+			$result .= $this->value(Set::extract($value, '0.0'), 'float').',';
+			$result .= $this->value(Set::extract($value, '0.1'), 'float').'),point(';
+			$result .= $this->value(Set::extract($value, '1.0'), 'float').',';
+			$result .= $this->value(Set::extract($value, '1.1'), 'float').'))';
+		}
+
+		return $result ;
+	}
+	
+/**
+ * Extracts a Model.field identifier and an SQL condition operator from a string, formats
+ * and inserts values, and composes them into an SQL snippet.
+ *
+ * @param Model $model Model object initiating the query
+ * @param string $key An SQL key snippet containing a field and optional SQL operator
+ * @param mixed $value The value(s) to be inserted in the string
+ * @return string
+ */
+	protected function _parseKey($model, $key, $value) {
+		$operatorMatch = '/^(((' . implode(')|(', $this->_sqlOps);
+		$operatorMatch .= ')\\x20?)|<[>=]?(?![^>]+>)\\x20?|[>=!]{1,3}(?!<)\\x20?)/is';
+		$bound = (strpos($key, '?') !== false || (is_array($value) && strpos($key, ':') !== false));
+
+		if (strpos($key, ' ') === false) {
+			$operator = '=';
+		} else {
+			list($key, $operator) = explode(' ', trim($key), 2);
+
+			if (!preg_match($operatorMatch, trim($operator)) && strpos($operator, ' ') !== false) {
+				$key = $key . ' ' . $operator;
+				$split = strrpos($key, ' ');
+				$operator = substr($key, $split);
+				$key = substr($key, 0, $split);
+			}
+		}
+
+		$virtual = false;
+		if (is_object($model) && $model->isVirtualField($key)) {
+			$key = $this->_quoteFields($model->getVirtualField($key));
+			$virtual = true;
+		}
+
+		$type = is_object($model) ? $model->getColumnType($key) : null;
+		$null = $value === null || (is_array($value) && empty($value));
+
+		if (strtolower($operator) === 'not') {
+			$data = $this->conditionKeysToString(
+				array($operator => array($key => $value)), true, $model
+			);
+			return $data[0];
+		} else if ( $operator === '@' || $operator === '~=' ) {
+			return "{$key} {$operator} {$value}";
+		}
+
+		$value = $this->value($value, $type);
+
+		if (!$virtual && $key !== '?') {
+			$isKey = (strpos($key, '(') !== false || strpos($key, ')') !== false);
+			$key = $isKey ? $this->_quoteFields($key) : $this->name($key);
+		}
+
+		if ($bound) {
+			return String::insert($key . ' ' . trim($operator), $value);
+		}
+
+		if (!preg_match($operatorMatch, trim($operator))) {
+			$operator .= ' =';
+		}
+		$operator = trim($operator);
+
+		if (is_array($value)) {
+			$value = implode(', ', $value);
+
+			switch ($operator) {
+				case '=':
+					$operator = 'IN';
+				break;
+				case '!=':
+				case '<>':
+					$operator = 'NOT IN';
+				break;
+			}
+			$value = "({$value})";
+		} elseif ($null || $value === 'NULL') {
+			switch ($operator) {
+				case '=':
+					$operator = 'IS';
+				break;
+				case '!=':
+				case '<>':
+					$operator = 'IS NOT';
+				break;
+			}
+		}
+		if ($virtual) {
+			return "({$key}) {$operator} {$value}";
+		}
+		return "{$key} {$operator} {$value}";
+	}
+
+	protected function _arrayConditionKeysToString($key, $value, $columnType, $quoteValues, $model)
+	{
+		$data = null;
+		
+		if ( substr(trim($key), -1) === '@' || substr(trim($key), -2) === '~=' ) {
+			$data = $this->_quoteFields($key) . ' ' . $this->value($value, $columnType);
+		} else {
+			$data = parent::_arrayConditionKeysToString($key, $value, $columnType, $quoteValues, $model);
+		}
+		
+		return $data;
 	}
 }
